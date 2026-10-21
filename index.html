@@ -86,6 +86,24 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
 .tendencia svg{width:100%;height:auto;max-height:240px;display:block}
 pre.prompt{white-space:pre-wrap;background:var(--papel);border:1px solid var(--linha);border-radius:8px;padding:.8rem;font-size:.82rem;max-height:22rem;overflow:auto}
 .oculto{display:none!important}
+.cab-painel{display:flex;justify-content:space-between;align-items:flex-start;gap:.75rem;flex-wrap:wrap;margin-bottom:.5rem}
+.cab-painel h2{margin:0}
+.segmentos{display:inline-flex;border:1px solid var(--linha);border-radius:8px;overflow:hidden}
+.segmentos button{background:none;border:0;padding:.35rem .7rem;cursor:pointer;color:var(--tinta2);font-size:.88rem}
+.segmentos button+button{border-left:1px solid var(--linha)}
+.segmentos button[aria-pressed="true"]{background:var(--marca);color:var(--superficie);font-weight:600}
+tfoot th{border-top:2px solid var(--linha);color:var(--tinta);font-weight:600}
+tr.atual td{background:var(--marca-suave)}
+tr.sub td:first-child{padding-left:1.6rem}
+tr.sub td{font-size:.88rem}
+.abre{background:none;border:0;padding:0;cursor:pointer;font-weight:600;color:var(--tinta);text-align:left}
+input.banco{width:8.5rem;text-align:right;padding:.3rem .45rem}
+i.hach{background:repeating-linear-gradient(45deg,var(--despesa) 0 3px,transparent 3px 6px)!important;border:1px solid var(--despesa)}
+table.matriz{font-size:.85rem}
+table.matriz th,table.matriz td{padding:.35rem .45rem}
+table.matriz .fixa{position:sticky;left:0;background:var(--superficie);z-index:1;min-width:11rem;text-align:left}
+table.matriz tr.cat th,table.matriz tr.cat td{background:var(--marca-suave);font-weight:600}
+table.matriz tr.cat .fixa{background:var(--marca-suave)}
 @media (prefers-reduced-motion:reduce){.esteira div{transition:none}}
 </style>
 </head>
@@ -103,6 +121,7 @@ pre.prompt{white-space:pre-wrap;background:var(--papel);border:1px solid var(--l
   <nav class="abas" role="tablist">
     <button role="tab" data-aba="painel" aria-selected="true">Painel</button>
     <button role="tab" data-aba="lanc">Lançamentos</button>
+    <button role="tab" data-aba="sub">Subcategorias</button>
     <button role="tab" data-aba="novo">Novo lançamento</button>
     <button role="tab" data-aba="ia">Prompt da IA</button>
     <button role="tab" data-aba="ajustes">Ajustes</button>
@@ -111,6 +130,7 @@ pre.prompt{white-space:pre-wrap;background:var(--papel);border:1px solid var(--l
 <main>
   <section id="aba-painel"></section>
   <section id="aba-lanc" class="oculto"></section>
+  <section id="aba-sub" class="oculto"></section>
   <section id="aba-novo" class="oculto"></section>
   <section id="aba-ia" class="oculto"></section>
   <section id="aba-ajustes" class="oculto"></section>
@@ -151,7 +171,7 @@ function visao(){
   [...S.pend].sort((a,b)=>(a.u||0)-(b.u||0)).forEach(p=>{if(p.x)mapa.delete(p.id);else mapa.set(p.id,p)});
   return [...mapa.values()];
 }
-let CACHE=null; const invalida=()=>{CACHE=null}; const dados=()=>CACHE||(CACHE=visao());
+let CACHE=null; const invalida=()=>{CACHE=null;IDX=null}; const dados=()=>CACHE||(CACHE=visao());
 
 /* ========= armazenamento: modo local (IndexedDB, para testes) ========= */
 const Local={
@@ -289,11 +309,36 @@ function montarTabelas(wb,lanc){
   Object.keys(catD).sort().forEach(c=>out.catD[c]=[...catD[c]].sort());
   return out;
 }
+/* ========= leitura de contas e saldos da aba Resumo ========= */
+function lerContasResumo(wb){
+  const ws=wb.Sheets["Resumo"];if(!ws||!ws["!ref"])return null;
+  const R=XLSX.utils.decode_range(ws["!ref"]);const cel=(r,c)=>ws[XLSX.utils.encode_cell({r,c})];
+  const lab=r=>{const c=cel(r,1);return c?limpa(c.v):""};
+  const alvo=hojeISO().slice(0,7);let col=-1,mesCol=null;
+  for(let c=2;c<=R.e.c;c++){const ce=cel(0,c);if(!ce||typeof ce.v!=="number")continue;const iso=serialISO(ce.v);if(iso&&iso.slice(0,7)<=alvo){col=c;mesCol=iso.slice(0,7)}}
+  if(col<0)return null;
+  let rRec=-1,rDes=-1,rFin=-1;for(let r=0;r<=R.e.r;r++){const l=lab(r);if(l==="Receitas"&&rRec<0)rRec=r;if(l==="Despesas"&&rDes<0)rDes=r;if(l==="Saldo Final"){rFin=r;break}}
+  if(rFin<0||rRec<0)return null;
+  const contas={},debito={},debR={};
+  for(let r=rFin+1;r<=R.e.r;r++){
+    const nome=lab(r);if(!nome)break;const ce=cel(r,col);if(!ce)continue;
+    let ini=0;
+    if(ce.f){for(const m of ce.f.matchAll(/\$?([A-Z]{1,3})\$?(\d+)/g)){const rr=+m[2]-1;if(rr>=rFin)continue;
+        if(rr<rRec){const c2=cel(rr,col);ini=+(c2&&c2.v)||0}else{const f=lab(rr);if(!f)continue;if(rDes>=0&&rr>rDes)debito[f]=nome;else if(!debR[f])debR[f]=nome}}}
+    else continue;
+    contas[nome]={ini:Math.round(ini*100)/100,mes:mesCol};
+  }
+  for(const[f,c]of Object.entries(debR))if(!debito[f])debito[f]=c; // despesas definem o vínculo; receitas só completam
+  return Object.keys(contas).length?{contas,debito}:null;
+}
 async function importarExcel(arq){
   const wb=XLSX.read(await arq.arrayBuffer(),{type:"array"});
   const lanc=[...lerAba(wb,"Despesas","D","d"),...lerAba(wb,"Receitas","R","r"),...lerAba(wb,"Previsões","P","p")];
   if(!lanc.length)throw new Error("Não encontrei as abas Despesas, Receitas ou Previsões no arquivo.");
-  return {lanc,tabelas:montarTabelas(wb,lanc)};
+  const tabelas=montarTabelas(wb,lanc);const rs=lerContasResumo(wb);
+  if(rs){tabelas.contas=rs.contas;tabelas.debito=rs.debito}
+  tabelas.banco=(S.tabelas&&S.tabelas.banco)||{};
+  return {lanc,tabelas};
 }
 
 /* ========= exportação para Excel ========= */
@@ -339,24 +384,120 @@ async function salvar(lista){
   if(CFG.modo==="onedrive"&&S.pend.length>150)toast("Há muitos lançamentos pendentes. Use Consolidar em Ajustes para deixar a página mais rápida.",5000);
 }
 
+/* ========= índices (somas pré-calculadas) ========= */
+let IDX=null;
+function pessoaBanco(f){const m=String(f||"").match(/^(.+?)\s*-\s*(Cart[aã]o|Conta)\s+(\S+)/i);return m?{p:semAcento(m[1]),b:semAcento(m[3])}:null}
+function contaDe(f){
+  const T=S.tabelas||{};const deb=T.debito||{};if(deb[f])return deb[f];
+  const contas=Object.keys(T.contas||{});if(contas.includes(f))return f;
+  const pb=pessoaBanco(f);if(!pb)return "";
+  return contas.find(c=>{const q=pessoaBanco(c);return q&&q.p===pb.p&&q.b===pb.b&&/conta/i.test(c)})||"";
+}
+function idx(){
+  if(IDX)return IDX;const L=dados();const D={},P={},R={},Dm={},Rm={},mov={},semConta={};
+  for(const l of L){
+    if(l.tp==="P"){const k=l.m+"|"+l.cat+"|"+l.sub;P[k]=(P[k]||0)+l.v;continue}
+    if(l.tp==="D"){const k=l.m+"|"+l.cat+"|"+l.sub;D[k]=(D[k]||0)+l.v;Dm[l.m]=(Dm[l.m]||0)+l.v}
+    else if(l.tp==="R"){const k=l.m+"|"+l.cat;R[k]=(R[k]||0)+l.v;Rm[l.m]=(Rm[l.m]||0)+l.v}
+    const c=contaDe(l.f);const val=l.tp==="R"?l.v:-l.v;
+    if(!c){semConta[l.f]=(semConta[l.f]||0)+1;continue}
+    const o=((mov[c]=mov[c]||{})[l.m]=mov[c][l.m]||{all:0,c2:0,ent:0,sai:0});
+    o.all+=val;if(l.c===2)o.c2+=val;if(val>=0)o.ent+=val;else o.sai-=val;
+  }
+  // previsões ainda não cobertas por lançamentos reais (mesmo mês, categoria e subtipo)
+  const aL={},aLk={};
+  for(const[k,v]of Object.entries(P)){const falta=Math.max(0,v-(D[k]||0));if(!falta)continue;const m=k.slice(0,7);aL[m]=(aL[m]||0)+falta;aLk[k]=falta}
+  return IDX={D,P,R,Dm,Rm,mov,semConta,aL,aLk};
+}
+function saldosMes(m){
+  const T=S.tabelas||{};const {mov}=idx();
+  return Object.entries(T.contas||{}).map(([c,cfg])=>{
+    if(!cfg.mes||m<cfg.mes)return {c,sem:true};
+    let ini=+cfg.ini||0;for(let k=cfg.mes;k<m;k=addMes(k,1))ini+=((mov[c]||{})[k]||{}).all||0;
+    const o=(mov[c]||{})[m]||{all:0,c2:0,ent:0,sai:0};
+    const banco=((T.banco||{})[c]||{})[m];
+    return {c,ini,ent:o.ent,sai:o.sai,real:ini+o.c2,prev:ini+o.all,banco};
+  });
+}
+
+/* ========= períodos ========= */
+let PER="prox";
+const PER_LBL={ult:"Últimos 12 meses",ano:"Ano",prox:"Próximos 12 meses"};
+function mesesPeriodo(){
+  if(PER==="ano"){const y=S.mes.slice(0,4);return Array.from({length:12},(_,i)=>`${y}-${p2(i+1)}`)}
+  if(PER==="ult")return Array.from({length:12},(_,i)=>addMes(S.mes,i-11));
+  return Array.from({length:12},(_,i)=>addMes(S.mes,i));
+}
+function seletorPeriodo(){return `<div class="segmentos" role="group" aria-label="Período">${Object.entries(PER_LBL).map(([k,t])=>`<button data-per="${k}" aria-pressed="${PER===k}">${k==="ano"?"Ano "+S.mes.slice(0,4):t}</button>`).join("")}</div>`}
+function ligarPeriodo(raiz){raiz.querySelectorAll("[data-per]").forEach(b=>b.onclick=()=>{PER=b.dataset.per;renderAba()})}
+
 /* ========= painel ========= */
 function somar(L,f){return L.reduce((s,l)=>f(l)?s+l.v:s,0)}
+const ABERTAS=new Set();
 function renderPainel(){
   const el=$("#aba-painel");const L=dados();
-  if(!L.length){el.innerHTML=`<div class="painel"><h2>Comece importando seu histórico</h2><p>Vá em <b>Ajustes</b> e importe a planilha de orçamento. Só as abas Despesas, Receitas e Previsões são lidas.</p><button class="btn" onclick="irAba('ajustes')">Abrir Ajustes</button></div>`;return}
-  const M=S.mes,MA=addMes(M,-12);
-  const dM=L.filter(l=>l.tp==="D"&&l.m===M),rec=somar(L,l=>l.tp==="R"&&l.m===M),desp=somar(dM,()=>1),orc=somar(L,l=>l.tp==="P"&&l.m===M);
-  const st=[0,1,2].map(c=>somar(dM,l=>l.c===c));
-  const catsOrc=new Set(L.filter(l=>l.tp==="P"&&l.m===M).map(l=>l.cat));const despOrc=somar(dM,l=>catsOrc.has(l.cat));const stT=st.reduce((a,b)=>a+Math.max(b,0),0)||1;
+  if(!L.length){el.innerHTML=`<div class="painel"><h2>Comece importando seu histórico</h2><p>Vá em <b>Ajustes</b> e importe a planilha de orçamento. Só as abas Despesas, Receitas, Previsões, Tabelas e Resumo são lidas.</p><button class="btn" onclick="irAba('ajustes')">Abrir Ajustes</button></div>`;return}
+  const I=idx();const T=S.tabelas||{catD:{}};const M=S.mes,MA=addMes(M,-12),HOJE=hojeISO().slice(0,7);
+  const dM=L.filter(l=>l.tp==="D"&&l.m===M),rec=I.Rm[M]||0,desp=I.Dm[M]||0,orc=somar(L,l=>l.tp==="P"&&l.m===M);
+  const st=[0,1,2].map(c=>somar(dM,l=>l.c===c));const stT=st.reduce((a,b)=>a+Math.max(b,0),0)||1;
+  const catsOrc=new Set(L.filter(l=>l.tp==="P"&&l.m===M).map(l=>l.cat));const despOrc=somar(dM,l=>catsOrc.has(l.cat));
+
+  /* --- saldos das contas --- */
+  const sal=saldosMes(M);const ok=sal.filter(s=>!s.sem);
+  const tot=k=>ok.reduce((s,x)=>s+(x[k]||0),0);
+  const temBanco=ok.some(s=>s.banco!=null&&s.banco!=="");
+  const cardContas=!Object.keys(T.contas||{}).length?`<div class="painel"><h2>Saldos das contas</h2><p>Ainda não há contas com saldo inicial. Em <b>Ajustes → Contas e saldos</b>, leia os saldos da aba Resumo da planilha ou informe manualmente.</p><button class="btn sec" onclick="irAba('ajustes')">Configurar contas</button></div>`:
+  `<div class="painel rolagem"><h2>Saldos das contas em ${mesLabel(M)}</h2>
+    <p class="sutil">Realizado considera só lançamentos <b>conferidos</b>; previsto inclui também os previstos e as faturas fechadas do mês. Digite o saldo do extrato para conferir.</p>
+    <table class="contas"><thead><tr><th>Conta</th><th class="v">Saldo inicial</th><th class="v">Entradas</th><th class="v">Saídas</th><th class="v">Realizado</th><th class="v">Previsto fim do mês</th><th class="v">Saldo no banco</th><th class="v">Diferença</th></tr></thead><tbody>
+    ${sal.map(s=>s.sem?`<tr><td>${esc(s.c)}</td><td colspan="7" class="sutil">Saldo inicial definido a partir de ${mesLabel(T.contas[s.c].mes||M)}</td></tr>`:
+      `<tr><td>${esc(s.c)}</td><td class="v">${brl(s.ini)}</td><td class="v pos">${brl(s.ent)}</td><td class="v neg">${brl(s.sai)}</td><td class="v"><b>${brl(s.real)}</b></td><td class="v ${s.prev<0?"neg":""}">${brl(s.prev)}</td>
+      <td class="v"><input class="banco" type="number" step="0.01" inputmode="decimal" data-banco="${esc(s.c)}" value="${s.banco??""}" aria-label="Saldo no banco de ${esc(s.c)}"></td>
+      <td class="v">${s.banco!=null&&s.banco!==""?difHtml(+s.banco-s.real):""}</td></tr>`).join("")}
+    </tbody><tfoot><tr><th>Total</th><th class="v">${brl(tot("ini"))}</th><th class="v">${brl(tot("ent"))}</th><th class="v">${brl(tot("sai"))}</th><th class="v">${brl(tot("real"))}</th><th class="v">${brl(tot("prev"))}</th><th class="v">${temBanco?brl(tot("banco")):""}</th><th class="v">${temBanco?difHtml(ok.filter(s=>s.banco!=null&&s.banco!=="").reduce((a,s)=>a+(+s.banco-s.real),0)):""}</th></tr></tfoot></table>
+    ${Object.keys(I.semConta).length?`<div class="aviso">Formas de pagamento sem conta vinculada ficam fora dos saldos: ${Object.keys(I.semConta).map(esc).join(", ")}. Vincule em Ajustes.</div>`:""}
+  </div>`;
+
+  /* --- visão de 12 meses --- */
+  const MS=mesesPeriodo();
+  const proj=MS.map(m=>{const r=I.Rm[m]||0,d=I.Dm[m]||0,a=m>=HOJE?(I.aL[m]||0):0;return {m,r,d,a,s:r-d-a}});
+  let acA=0;const temContas=Object.keys(T.contas||{}).length>0;
+  proj.forEach(p=>{if(p.m>=HOJE)acA+=p.a;const sm=saldosMes(p.m).filter(x=>!x.sem);p.sc=temContas&&sm.length?sm.reduce((s,x)=>s+x.prev,0)-acA:null});
+  const T12={r:0,d:0,a:0,s:0};proj.forEach(p=>{T12.r+=p.r;T12.d+=p.d;T12.a+=p.a;T12.s+=p.s});
+  const mx=Math.max(1,...proj.map(p=>Math.max(p.r,p.d+p.a)));const W=720,H=170,bw=W/12;
+  const svg=`<svg viewBox="0 0 ${W} ${H+28}" role="img" aria-label="Receitas e despesas por mês"><defs><pattern id="hach" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="8" height="8" fill="var(--despesa)" opacity=".35"/><line x1="0" y1="0" x2="0" y2="8" stroke="var(--despesa)" stroke-width="4"/></pattern></defs>
+    ${proj.map((p,i)=>{const x=i*bw,hr=p.r/mx*H,hd=p.d/mx*H,ha=p.a/mx*H;
+    return `<g><title>${mesLabel(p.m)}: receitas ${brl(p.r)}, despesas lançadas ${brl(p.d)}${p.a?`, previsões a lançar ${brl(p.a)}`:""}</title>
+    <rect x="${x+bw*.15}" y="${H-hr}" width="${bw*.32}" height="${hr}" fill="var(--receita)" rx="3"/>
+    <rect x="${x+bw*.5}" y="${H-hd}" width="${bw*.32}" height="${hd}" fill="var(--despesa)" rx="3"/>
+    ${ha?`<rect x="${x+bw*.5}" y="${H-hd-ha}" width="${bw*.32}" height="${ha}" fill="url(#hach)" rx="3"/>`:""}
+    <text x="${x+bw/2}" y="${H+18}" text-anchor="middle" font-size="12" fill="var(--tinta2)" ${p.m===M?'font-weight="700"':""}>${MESES[+p.m.slice(5)-1]}/${p.m.slice(2,4)}</text></g>`}).join("")}</svg>`;
+  const cardAno=`<div class="painel"><div class="cab-painel"><h2>${PER==="ano"?"Ano "+M.slice(0,4):PER_LBL[PER]}</h2>${seletorPeriodo()}</div>
+    <div class="tendencia">${svg}</div>
+    <div class="legenda" style="margin:.4rem 0 .8rem"><span><i style="background:var(--receita)"></i>Receitas</span><span><i style="background:var(--despesa)"></i>Despesas lançadas</span><span><i style="background:url(#)" class="hach"></i>Previsões ainda não lançadas</span></div>
+    <div class="rolagem"><table><thead><tr><th>Mês</th><th class="v">Receitas</th><th class="v">Despesas lançadas</th><th class="v">Previsões a lançar</th><th class="v">Saldo do mês</th>${temContas?`<th class="v">Saldo projetado das contas</th>`:""}</tr></thead><tbody>
+    ${proj.map(p=>`<tr class="${p.m===M?"atual":""}"><td><a href="#" data-irmes="${p.m}">${mesLabel(p.m)}</a></td><td class="v">${brl(p.r)}</td><td class="v">${brl(p.d)}</td><td class="v sutil">${p.a?brl(p.a):"–"}</td><td class="v ${p.s<0?"neg":"pos"}">${brl(p.s)}</td>${temContas?`<td class="v ${p.sc!=null&&p.sc<0?"neg":""}">${p.sc==null?"–":brl(p.sc)}</td>`:""}</tr>`).join("")}
+    </tbody><tfoot><tr><th>Total</th><th class="v">${brl(T12.r)}</th><th class="v">${brl(T12.d)}</th><th class="v">${brl(T12.a)}</th><th class="v ${T12.s<0?"neg":"pos"}">${brl(T12.s)}</th>${temContas?"<th></th>":""}</tr></tfoot></table></div>
+    <p class="sutil">Previsões a lançar = valores da aba Previsões que ainda não têm lançamento real no mesmo mês, categoria e subtipo. Quando a conta de luz real é lançada, a previsão dela deixa de contar, sem duplicar.</p>
+  </div>`;
+
+  /* --- categorias com subcategorias --- */
   const ult12=Array.from({length:12},(_,i)=>addMes(M,-12+i));
-  const cats=Object.keys((S.tabelas&&S.tabelas.catD)||{});
-  const linhas=cats.map(c=>{const r=somar(dM,l=>l.cat===c),o=somar(L,l=>l.tp==="P"&&l.m===M&&l.cat===c),a=somar(L,l=>l.tp==="D"&&l.m===MA&&l.cat===c),
-    med=somar(L,l=>l.tp==="D"&&ult12.includes(l.m)&&l.cat===c)/12;return {c,r,o,a,med}}).filter(x=>x.r||x.o||x.a||x.med).sort((a,b)=>b.r-a.r);
-  const tend=Array.from({length:12},(_,i)=>{const m=addMes(M,i-11);return {m,d:somar(L,l=>l.tp==="D"&&l.m===m),r:somar(L,l=>l.tp==="R"&&l.m===m)}});
-  const mx=Math.max(1,...tend.map(t=>Math.max(t.d,t.r)));
-  const W=720,H=180,bw=W/12;
-  const svg=`<svg viewBox="0 0 ${W} ${H+28}" role="img" aria-label="Receitas e despesas dos últimos 12 meses">${tend.map((t,i)=>{const x=i*bw;const hr=t.r/mx*H,hd=t.d/mx*H;
-    return `<g><title>${mesLabel(t.m)}: receitas ${brl(t.r)}, despesas ${brl(t.d)}</title><rect x="${x+bw*.15}" y="${H-hr}" width="${bw*.32}" height="${hr}" fill="var(--receita)" rx="3"/><rect x="${x+bw*.5}" y="${H-hd}" width="${bw*.32}" height="${hd}" fill="var(--despesa)" rx="3"/><text x="${x+bw/2}" y="${H+18}" text-anchor="middle" font-size="12" fill="var(--tinta2)" ${t.m===M?'font-weight="700" fill="var(--tinta)"':""}>${mesLabel(t.m).slice(0,3)}</text></g>`}).join("")}</svg>`;
+  const val=(m,c,s)=>s==null?Object.entries(I.D).reduce((a,[k,v])=>k.startsWith(m+"|"+c+"|")?a+v:a,0):(I.D[m+"|"+c+"|"+s]||0);
+  const orcV=(m,c,s)=>s==null?Object.entries(I.P).reduce((a,[k,v])=>k.startsWith(m+"|"+c+"|")?a+v:a,0):(I.P[m+"|"+c+"|"+s]||0);
+  const linha=(c,s)=>{const r=val(M,c,s),o=orcV(M,c,s),a=val(MA,c,s),med=ult12.reduce((t,m)=>t+val(m,c,s),0)/12;return {r,o,a,med}};
+  const subsDe=c=>{const set=new Set(T.catD[c]||[]);Object.keys(I.D).forEach(k=>{const[m,cc,ss]=k.split("|");if(cc===c&&(m===M||m===MA))set.add(ss)});return [...set]};
+  const cats=Object.keys(T.catD).map(c=>({c,...linha(c)})).filter(x=>x.r||x.o||x.a||x.med).sort((a,b)=>b.r-a.r);
+  const celulas=(x,cls="")=>{const pct=x.o?x.r/x.o:0;return `<td class="v ${cls}">${brl(x.r)}</td><td class="v ${cls}">${x.o?brl(x.o):"–"}</td>
+    <td>${x.o?`<div class="barra" title="${(pct*100).toFixed(0)}%"><b class="${pct>1?"estouro":""}" style="width:${Math.min(pct,1)*100}%"></b></div>`:""}</td>
+    <td class="v sutil">${brl(x.a)}</td><td class="v sutil">${brl(x.med)}</td>`};
+  const cardCat=`<div class="painel rolagem"><h2>Despesas por categoria em ${mesLabel(M)}</h2><p class="sutil">Toque numa categoria para abrir os subtipos.</p>
+    <table><thead><tr><th>Categoria</th><th class="v">Realizado</th><th class="v">Orçado</th><th>Uso</th><th class="v">${mesLabel(MA)}</th><th class="v">Média 12m</th></tr></thead>
+    ${cats.map(x=>{const aberta=ABERTAS.has(x.c);const subs=aberta?subsDe(x.c).map(s=>({s,...linha(x.c,s)})).filter(y=>y.r||y.o||y.a||y.med).sort((a,b)=>b.r-a.r):[];
+      return `<tbody><tr class="cat"><td><button class="abre" data-abre="${esc(x.c)}" aria-expanded="${aberta}">${aberta?"▾":"▸"} ${esc(x.c)}</button></td>${celulas(x)}</tr>
+      ${subs.map(y=>`<tr class="sub"><td><a href="#" data-fcat="${esc(x.c)}" data-fsub="${esc(y.s)}">${esc(y.s||"(sem subtipo)")}</a></td>${celulas(y)}</tr>`).join("")}</tbody>`}).join("")}
+    </table></div>`;
+
   el.innerHTML=`
   <div class="painel">
     <h2>Como está ${mesLabel(M)}</h2>
@@ -371,26 +512,60 @@ function renderPainel(){
     </div>
     <div class="legenda">${[0,1,2].map(c=>`<span><i class="e${c}"></i>${STATUS[c]}: <b>${brl(st[c])}</b></span>`).join("")}</div>
   </div>
-  <div>
-    <div class="painel rolagem"><h2>Despesas por categoria</h2>
-      <table><thead><tr><th>Categoria</th><th class="v">Realizado</th><th class="v">Orçado</th><th>Uso</th><th class="v">${mesLabel(MA)}</th><th class="v">Média 12m</th></tr></thead><tbody>
-      ${linhas.map(x=>{const pct=x.o?x.r/x.o:0;return `<tr><td><a href="#" onclick="filtrarCat('${esc(x.c)}');return false">${esc(x.c)}</a></td><td class="v">${brl(x.r)}</td><td class="v">${x.o?brl(x.o):"–"}</td>
-      <td>${x.o?`<div class="barra" title="${(pct*100).toFixed(0)}%"><b class="${pct>1?"estouro":""}" style="width:${Math.min(pct,1)*100}%"></b></div>`:""}</td>
-      <td class="v sutil">${brl(x.a)}</td><td class="v sutil">${brl(x.med)}</td></tr>`}).join("")}
-      </tbody></table></div>
-    <div class="painel tendencia"><h2>Últimos 12 meses</h2>${svg}
-      <div class="legenda" style="margin-top:.5rem"><span><i style="background:var(--receita)"></i>Receitas</span><span><i style="background:var(--despesa)"></i>Despesas</span></div></div>
-  </div>`;
+  ${cardContas}${cardAno}${cardCat}`;
+
+  ligarPeriodo(el);
+  el.querySelectorAll("[data-irmes]").forEach(a=>a.onclick=e=>{e.preventDefault();S.mes=a.dataset.irmes;renderTudo()});
+  el.querySelectorAll("[data-abre]").forEach(b=>b.onclick=()=>{const c=b.dataset.abre;ABERTAS.has(c)?ABERTAS.delete(c):ABERTAS.add(c);renderPainel()});
+  el.querySelectorAll("[data-fsub]").forEach(a=>a.onclick=e=>{e.preventDefault();filtrarCat(a.dataset.fcat,a.dataset.fsub,M)});
+  el.querySelectorAll("[data-banco]").forEach(i=>i.onchange=async()=>{
+    const t=JSON.parse(JSON.stringify(S.tabelas));t.banco=t.banco||{};const c=i.dataset.banco;t.banco[c]=t.banco[c]||{};
+    if(i.value==="")delete t.banco[c][M];else t.banco[c][M]=Math.round(parseFloat(i.value)*100)/100;
+    try{await B().gravarTabelas(t);renderPainel()}catch(x){toast(x.message)}});
+}
+function difHtml(d){if(Math.abs(d)<0.005)return `<span class="pos">✓ bate</span>`;return `<span class="neg">${d>0?"+":""}${brl(d)}</span>`}
+
+/* ========= subcategorias × meses ========= */
+let MODO_SUB="lanc";
+function renderSub(){
+  const el=$("#aba-sub");const T=S.tabelas||{catD:{},catR:[]};
+  if(!dados().length){el.innerHTML=`<div class="painel">Importe o histórico em Ajustes para ver esta análise.</div>`;return}
+  const I=idx();const MS=mesesPeriodo();const HOJE=hojeISO().slice(0,7);
+  const v=(m,c,s)=>{const k=m+"|"+c+"|"+s;if(MODO_SUB==="orc")return I.P[k]||0;if(MODO_SUB==="proj")return (I.D[k]||0)+(m>=HOJE?(I.aLk[k]||0):0);return I.D[k]||0};
+  const subs={};const reg=k=>{const[m,c,s]=k.split("|");if(MS.includes(m))(subs[c]=subs[c]||new Set()).add(s)};
+  Object.keys(I.D).forEach(reg);Object.keys(I.P).forEach(reg);
+  const grupos=Object.keys(subs).sort().map(c=>{const linhas=[...subs[c]].map(s=>{const vals=MS.map(m=>v(m,c,s));return {s,vals,t:vals.reduce((a,b)=>a+b,0)}}).filter(l=>l.t).sort((a,b)=>b.t-a.t);
+    const vals=MS.map((_,i)=>linhas.reduce((a,l)=>a+l.vals[i],0));return {c,linhas,vals,t:vals.reduce((a,b)=>a+b,0)}}).filter(g=>g.t).sort((a,b)=>b.t-a.t);
+  const totM=MS.map((_,i)=>grupos.reduce((a,g)=>a+g.vals[i],0));const totG=totM.reduce((a,b)=>a+b,0);
+  const recC=[...new Set(Object.keys(I.R).map(k=>k.split("|")[1]))].map(c=>{const vals=MS.map(m=>I.R[m+"|"+c]||0);return {c,vals,t:vals.reduce((a,b)=>a+b,0)}}).filter(r=>r.t).sort((a,b)=>b.t-a.t);
+  const recM=MS.map((_,i)=>recC.reduce((a,r)=>a+r.vals[i],0));
+  const n=x=>x?Math.round(x).toLocaleString("pt-BR"):"–";
+  const cab=`<tr><th class="fixa">Categoria / subtipo</th>${MS.map(m=>`<th class="v">${MESES[+m.slice(5)-1]}/${m.slice(2,4)}</th>`).join("")}<th class="v">Total</th><th class="v">Média</th></tr>`;
+  el.innerHTML=`<div class="painel"><div class="cab-painel"><h2>Despesas por subtipo, mês a mês</h2>${seletorPeriodo()}</div>
+    <div class="filtros" style="max-width:420px"><div><label>Mostrar</label><select id="modoSub">
+      <option value="lanc" ${MODO_SUB==="lanc"?"selected":""}>Lançado</option><option value="orc" ${MODO_SUB==="orc"?"selected":""}>Orçado (previsões)</option><option value="proj" ${MODO_SUB==="proj"?"selected":""}>Projetado (lançado + previsões a lançar)</option></select></div></div>
+    <p class="sutil">Valores em reais, sem centavos. Toque num valor para ver os lançamentos daquele mês.</p>
+    <div class="rolagem"><table class="matriz"><thead>${cab}</thead>
+    ${grupos.map(g=>`<tbody><tr class="cat"><th class="fixa">${esc(g.c)}</th>${g.vals.map(x=>`<td class="v">${n(x)}</td>`).join("")}<td class="v"><b>${n(g.t)}</b></td><td class="v">${n(g.t/12)}</td></tr>
+      ${g.linhas.map(l=>`<tr class="sub"><td class="fixa">${esc(l.s||"(sem subtipo)")}</td>${l.vals.map((x,i)=>`<td class="v">${x?`<a href="#" data-c="${esc(g.c)}" data-s="${esc(l.s)}" data-m="${MS[i]}">${n(x)}</a>`:"–"}</td>`).join("")}<td class="v"><b>${n(l.t)}</b></td><td class="v sutil">${n(l.t/12)}</td></tr>`).join("")}</tbody>`).join("")}
+    <tfoot><tr><th class="fixa">Total despesas</th>${totM.map(x=>`<th class="v">${n(x)}</th>`).join("")}<th class="v">${n(totG)}</th><th class="v">${n(totG/12)}</th></tr></tfoot></table></div></div>
+    <div class="painel"><h2>Receitas por categoria</h2><div class="rolagem"><table class="matriz"><thead>${cab}</thead><tbody>
+    ${recC.map(r=>`<tr><td class="fixa">${esc(r.c)}</td>${r.vals.map(x=>`<td class="v">${n(x)}</td>`).join("")}<td class="v"><b>${n(r.t)}</b></td><td class="v sutil">${n(r.t/12)}</td></tr>`).join("")}
+    </tbody><tfoot><tr><th class="fixa">Total receitas</th>${recM.map(x=>`<th class="v">${n(x)}</th>`).join("")}<th class="v">${n(recM.reduce((a,b)=>a+b,0))}</th><th class="v">${n(recM.reduce((a,b)=>a+b,0)/12)}</th></tr>
+    <tr><th class="fixa">Saldo</th>${recM.map((x,i)=>`<th class="v ${x-totM[i]<0?"neg":"pos"}">${n(x-totM[i])}</th>`).join("")}<th class="v">${n(recM.reduce((a,b)=>a+b,0)-totG)}</th><th></th></tr></tfoot></table></div></div>`;
+  ligarPeriodo(el);
+  $("#modoSub").onchange=e=>{MODO_SUB=e.target.value;renderSub()};
+  el.querySelectorAll("[data-m]").forEach(a=>a.onclick=e=>{e.preventDefault();filtrarCat(a.dataset.c,a.dataset.s,a.dataset.m)});
 }
 
 /* ========= lançamentos ========= */
-const F={mes:"sel",tp:"D",cat:"",f:"",c:"",q:""};
-function filtrarCat(c){F.cat=c;F.tp="D";F.mes="sel";irAba("lanc")}
+const F={mes:"sel",tp:"D",cat:"",sub:null,f:"",c:"",q:""};
+function filtrarCat(c,sub,m){F.cat=c;F.sub=sub==null?null:sub;F.tp="D";F.mes="sel";if(m)S.mes=m;$("#mesLbl").textContent=mesLabel(S.mes);irAba("lanc")}
 function opts(lista,sel,vazio){return (vazio!=null?`<option value="">${vazio}</option>`:"")+lista.map(o=>`<option ${o===sel?"selected":""}>${esc(o)}</option>`).join("")}
 function renderLanc(){
   const el=$("#aba-lanc");const T=S.tabelas||{catD:{},catR:[],formas:[]};
   const cats=F.tp==="R"?T.catR:Object.keys(T.catD);
-  let L=dados().filter(l=>(!F.tp||l.tp===F.tp)&&(F.mes!=="sel"||l.m===S.mes)&&(!F.cat||l.cat===F.cat)&&(!F.f||l.f===F.f)&&(F.c===""||l.c===+F.c));
+  let L=dados().filter(l=>(!F.tp||l.tp===F.tp)&&(F.mes!=="sel"||l.m===S.mes)&&(!F.cat||l.cat===F.cat)&&(F.sub==null||l.sub===F.sub)&&(!F.f||l.f===F.f)&&(F.c===""||l.c===+F.c));
   if(F.q){const q=semAcento(F.q);L=L.filter(l=>semAcento(`${l.l} ${l.ds} ${l.sub} ${l.cat}`).includes(q))}
   L.sort((a,b)=>(b.dp||"").localeCompare(a.dp||""));
   const total=somar(L,()=>1);const mostra=L.slice(0,400);
@@ -410,7 +585,7 @@ function renderLanc(){
       <td class="v ${l.v<0?"pos":""}">${brl(l.v)}</td><td><button class="selo c${l.c}" data-conf="${esc(l.id)}">${STATUS[l.c]}</button></td>
       <td><button class="ico" data-edit="${esc(l.id)}" aria-label="Editar">✎</button></td></tr>`).join("")}
     </tbody></table></div></div>`;
-  const liga=(id,k)=>$(id).addEventListener(id==="#fQ"?"input":"change",e=>{F[k]=e.target.value;if(k==="tp")F.cat="";renderLanc();if(id==="#fQ"){const i=$("#fQ");i.focus();i.setSelectionRange(i.value.length,i.value.length)}});
+  const liga=(id,k)=>$(id).addEventListener(id==="#fQ"?"input":"change",e=>{F[k]=e.target.value;if(k==="tp"||k==="cat")F.sub=null;if(k==="tp")F.cat="";renderLanc();if(id==="#fQ"){const i=$("#fQ");i.focus();i.setSelectionRange(i.value.length,i.value.length)}});
   liga("#fMes","mes");liga("#fTp","tp");liga("#fCat","cat");liga("#fF","f");liga("#fC","c");liga("#fQ","q");
   el.querySelectorAll("[data-conf]").forEach(b=>b.onclick=async()=>{const l=dados().find(x=>x.id===b.dataset.conf);if(!l)return;
     b.disabled=true;try{await salvar([{...l,c:(l.c+1)%3}])}catch(e){toast(e.message);b.disabled=false}});
@@ -570,7 +745,7 @@ function renderAjustes(){
     <div class="acoes"><button class="btn" id="ajSalvarCfg">Salvar e conectar</button>${CFG.modo==="onedrive"&&MSAL?`<button class="btn sec" id="ajSair">Sair da conta</button>`:""}</div>
   </div>
   <div class="painel"><h2>Histórico do Excel</h2>
-    <p>Importa as abas <b>Despesas</b>, <b>Receitas</b> e <b>Previsões</b>, e lê as categorias da aba Tabelas. Nenhuma outra aba é lida.</p>
+    <p>Importa as abas <b>Despesas</b>, <b>Receitas</b> e <b>Previsões</b>, as categorias da aba Tabelas e os saldos e vínculos de contas da aba Resumo. Nenhuma outra aba é lida.</p>
     <div class="aviso">A importação substitui a base atual. Lançamentos feitos na plataforma depois da última exportação seriam perdidos. Faça isso só na primeira vez.</div>
     <input type="file" id="ajArq" accept=".xlsx,.xlsm,.xls">
     <p class="sutil">Base atual: ${S.base.length} lançamentos consolidados, ${S.pend.length} pendentes de consolidação.</p>
@@ -578,6 +753,21 @@ function renderAjustes(){
   <div class="painel"><h2>Excel atualizado</h2>
     <p>Gera uma planilha com as mesmas colunas da sua, mais quem lançou e a origem.${CFG.modo==="onedrive"?" Também salva uma cópia na pasta <b>exportacoes</b> do OneDrive.":""}</p>
     <div class="acoes"><button class="btn" id="ajExport">Gerar Excel</button>${CFG.modo==="onedrive"?`<button class="btn sec" id="ajConsol">Consolidar pendentes (${S.pend.length})</button>`:""}</div>
+  </div>
+  <div class="painel"><h2>Contas e saldos</h2>
+    <p class="sutil">O saldo de cada conta parte do saldo inicial no mês indicado e soma receitas e despesas das formas de pagamento vinculadas a ela (como na aba Resumo da planilha).</p>
+    <div class="acoes" style="margin:0 0 .75rem"><label class="btn sec" style="margin:0;color:var(--marca)">Ler contas e saldos da planilha<input type="file" id="ajResumo" accept=".xlsx,.xlsm" class="oculto"></label></div>
+    <p class="sutil" style="margin-top:-.4rem">Isso lê só a aba Resumo. Os lançamentos não são alterados.</p>
+    <div class="rolagem"><table><thead><tr><th>Conta</th><th>Saldo inicial (R$)</th><th>No início de</th><th></th></tr></thead><tbody id="tbContas">
+    ${Object.entries(T.contas||{}).map(([c,v])=>`<tr><td>${esc(c)}</td><td><input type="number" step="0.01" data-cini="${esc(c)}" value="${v.ini??0}"></td><td><input type="month" data-cmes="${esc(c)}" value="${esc(v.mes||"")}"></td><td><button class="ico" data-cdel="${esc(c)}" aria-label="Remover conta">✕</button></td></tr>`).join("")||`<tr><td colspan="4" class="sutil">Nenhuma conta ainda.</td></tr>`}
+    </tbody></table></div>
+    <div class="form" style="margin-top:.6rem"><div><label>Nova conta</label><select id="novaConta">${opts([...new Set([...T.formas.filter(f=>!ehCartao(f)),"Previsão"])].filter(f=>!(T.contas||{})[f]),"","Escolha")}</select></div>
+      <div style="align-self:end"><button class="btn sec" id="ajAddConta">Adicionar conta</button></div></div>
+    <h3 style="margin-top:1.2rem">Em qual conta cada forma de pagamento cai</h3>
+    <div class="rolagem"><table><thead><tr><th>Forma de pagamento</th><th>Debita / credita na conta</th></tr></thead><tbody>
+    ${[...T.formas,"Previsão"].map(f=>`<tr><td>${esc(f)}</td><td><select data-deb="${esc(f)}">${opts(Object.keys(T.contas||{}),contaDe(f),"— fora dos saldos —")}</select></td></tr>`).join("")}
+    </tbody></table></div>
+    <div class="acoes"><button class="btn" id="ajSalvarContas">Salvar contas</button></div>
   </div>
   <div class="painel"><h2>Fechamento e vencimento dos cartões</h2>
     <p class="sutil">Com estes dias, a plataforma calcula sozinha em qual fatura cada compra cai. Sem eles, assume a fatura do mês seguinte, com vencimento no dia 10.</p>
@@ -598,6 +788,17 @@ function renderAjustes(){
     const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=nome;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000);
     if(await B().enviarExport(blob,nome))toast("Excel gerado e salvo no OneDrive.");else toast("Excel gerado.")}catch(x){toast(x.message)}e.target.disabled=false};
   if($("#ajConsol"))$("#ajConsol").onclick=async e=>{e.target.disabled=true;try{const n=await B().consolidar();invalida();renderTudo();toast(`${n} pendentes consolidados.`)}catch(x){toast(x.message,6000);e.target.disabled=false}};
+  const salvarT=async(t,msg)=>{try{await B().gravarTabelas(t);invalida();renderAjustes();toast(msg)}catch(x){toast(x.message)}};
+  $("#ajResumo").onchange=async e=>{const a=e.target.files[0];if(!a)return;
+    try{const wb=XLSX.read(await a.arrayBuffer(),{type:"array"});const rs=lerContasResumo(wb);if(!rs)return toast("Não encontrei a seção Saldo Final na aba Resumo.");
+      const t=JSON.parse(JSON.stringify(S.tabelas));t.contas=rs.contas;t.debito=rs.debito;await salvarT(t,`${Object.keys(rs.contas).length} contas lidas, saldo inicial de ${mesLabel(Object.values(rs.contas)[0].mes)}.`)}catch(x){toast(x.message)}};
+  document.querySelectorAll("[data-cdel]").forEach(b=>b.onclick=()=>{if(!confirm("Remover esta conta dos saldos?"))return;const t=JSON.parse(JSON.stringify(S.tabelas));delete t.contas[b.dataset.cdel];salvarT(t,"Conta removida.")});
+  $("#ajAddConta").onclick=()=>{const c=$("#novaConta").value;if(!c)return toast("Escolha a conta.");const t=JSON.parse(JSON.stringify(S.tabelas));t.contas=t.contas||{};t.contas[c]={ini:0,mes:S.mes};salvarT(t,"Conta adicionada. Ajuste o saldo inicial.")};
+  $("#ajSalvarContas").onclick=()=>{const t=JSON.parse(JSON.stringify(S.tabelas));t.contas=t.contas||{};t.debito={};
+    document.querySelectorAll("[data-cini]").forEach(i=>{t.contas[i.dataset.cini].ini=Math.round((parseFloat(i.value)||0)*100)/100});
+    document.querySelectorAll("[data-cmes]").forEach(i=>{t.contas[i.dataset.cmes].mes=i.value});
+    document.querySelectorAll("[data-deb]").forEach(s=>{if(s.value)t.debito[s.dataset.deb]=s.value});
+    salvarT(t,"Contas salvas.")};
   $("#ajCartoes").onclick=async()=>{const t=JSON.parse(JSON.stringify(S.tabelas));t.cartoes=t.cartoes||{};
     document.querySelectorAll("[data-cart]").forEach(i=>{const c=i.dataset.cart;t.cartoes[c]=t.cartoes[c]||{};t.cartoes[c][i.dataset.campo]=+i.value||null});
     try{await B().gravarTabelas(t);toast("Dias dos cartões salvos.")}catch(x){toast(x.message)}};
@@ -607,7 +808,7 @@ function renderAjustes(){
 let ABA="painel";
 function irAba(a){ABA=a;document.querySelectorAll("nav.abas button").forEach(b=>b.setAttribute("aria-selected",b.dataset.aba===a));
   document.querySelectorAll("main>section").forEach(s=>s.classList.toggle("oculto",s.id!=="aba-"+a));renderAba();window.scrollTo(0,0)}
-function renderAba(){({painel:renderPainel,lanc:renderLanc,novo:renderNovo,ia:renderIA,ajustes:renderAjustes})[ABA]()}
+function renderAba(){({painel:renderPainel,lanc:renderLanc,sub:renderSub,novo:renderNovo,ia:renderIA,ajustes:renderAjustes})[ABA]()}
 function renderTudo(){$("#mesLbl").textContent=mesLabel(S.mes);$("#quem").textContent=CFG.modo==="onedrive"?S.usuario:"modo de teste";renderAba()}
 document.querySelectorAll("nav.abas button").forEach(b=>b.onclick=()=>irAba(b.dataset.aba));
 $("#mesAnt").onclick=()=>{S.mes=addMes(S.mes,-1);renderTudo()};$("#mesProx").onclick=()=>{S.mes=addMes(S.mes,1);renderTudo()};
