@@ -365,6 +365,23 @@ function montarTabelas(wb,lanc){
   return out;
 }
 /* ========= leitura de contas e saldos da aba Resumo ========= */
+function lerVinculosMensais(wb){
+  const ws=wb.Sheets["Resumo"];if(!ws||!ws["!ref"])return null;
+  const R=XLSX.utils.decode_range(ws["!ref"]);const cel=(r,c)=>ws[XLSX.utils.encode_cell({r,c})];
+  const lab=r=>{const c=cel(r,1);return c?limpa(c.v):""};
+  let rRec=-1,rDes=-1,rFin=-1;for(let r=0;r<=R.e.r;r++){const l=lab(r);if(l==="Receitas"&&rRec<0)rRec=r;if(l==="Despesas"&&rDes<0)rDes=r;if(l==="Saldo Final"){rFin=r;break}}
+  if(rFin<0||rDes<0)return null;
+  const linhas=[];for(let r=rFin+1;r<=R.e.r&&lab(r);r++)linhas.push(r);
+  const porMes={};
+  for(let c=2;c<=R.e.c;c++){const ce=cel(0,c);if(!ce||typeof ce.v!=="number")continue;const iso=serialISO(ce.v);if(!iso)continue;
+    const mD={},mR={};
+    for(const r of linhas){const f=cel(r,c);if(!f||!f.f)continue;const nome=lab(r);
+      for(const m of f.f.matchAll(/\$?([A-Z]{1,3})\$?(\d+)/g)){const rr=+m[2]-1;const forma=lab(rr);if(!forma)continue;
+        if(rr>rDes&&rr<rFin){if(!mD[forma])mD[forma]=nome}else if(rr>rRec&&rr<rDes){if(!mR[forma])mR[forma]=nome}}}
+    porMes[iso.slice(0,7)]={...mR,...mD};
+  }
+  return porMes;
+}
 function lerContasResumo(wb){
   const ws=wb.Sheets["Resumo"];if(!ws||!ws["!ref"])return null;
   const R=XLSX.utils.decode_range(ws["!ref"]);const cel=(r,c)=>ws[XLSX.utils.encode_cell({r,c})];
@@ -510,8 +527,8 @@ function tipoConta(c){const cfg=((S.tabelas||{}).contas||{})[c];if(cfg&&cfg.tipo
 function grupoConta(c){const t=tipoConta(c);if(liquida(t))return "Contas correntes";if(t==="receber")return "A receber";if(t==="divida")return "Dívidas";return (((S.tabelas||{}).contas||{})[c]||{}).grupo||"Aplicações"}
 const ORDEM_GRUPO=g=>g==="Contas correntes"?0:g==="Dívidas"?9:g==="A receber"?8:1;
 function pessoaBanco(f){const m=String(f||"").match(/^(.+?)\s*-\s*(Cart[aã]o|Conta)\s+(\S+)/i);return m?{p:semAcento(m[1]),b:semAcento(m[3])}:null}
-function contaDe(f){
-  if(!f)return "";const T=S.tabelas||{};const deb=T.debito||{};if(deb[f])return deb[f];
+function contaDe(f,m){
+  if(!f)return "";const T=S.tabelas||{};const dm=(T.debitoMes||{})[f];if(m&&dm&&dm[m])return dm[m];const deb=T.debito||{};if(deb[f])return deb[f];
   const contas=Object.keys(T.contas||{});if(contas.includes(f))return f;
   const pb=pessoaBanco(f);if(!pb)return "";
   return contas.find(c=>{const q=pessoaBanco(c);return q&&q.p===pb.p&&q.b===pb.b&&/conta/i.test(c)})||"";
@@ -525,7 +542,7 @@ function idx(){
   for(const l of L){
     if(l.tp==="P"){if(l.pt)continue;const k=l.m+"|"+l.cat+"|"+l.sub;P[k]=(P[k]||0)+l.v;continue}
     if(l.tp==="T"){
-      const o=contaDe(l.f),d=contaDe(l.fd);
+      const o=contaDe(l.f,l.m),d=contaDe(l.fd,l.m);
       if(l.f&&!o)semConta[l.f]=(semConta[l.f]||0)+1;if(l.fd&&!d)semConta[l.fd]=(semConta[l.fd]||0)+1;
       if(o)mexe(o,l.m,-l.v,l.c);if(d)mexe(d,l.m,l.v,l.c);
       if(o&&d){const lo=liquida(tipoConta(o)),ld=liquida(tipoConta(d));if(lo&&!ld)Gm[l.m]=(Gm[l.m]||0)+l.v;else if(!lo&&ld)Gm[l.m]=(Gm[l.m]||0)-l.v}
@@ -533,7 +550,7 @@ function idx(){
     }
     if(l.tp==="D"){const k=l.m+"|"+l.cat+"|"+l.sub;D[k]=(D[k]||0)+l.v;Dm[l.m]=(Dm[l.m]||0)+l.v}
     else if(l.tp==="R"){const k=l.m+"|"+l.cat;R[k]=(R[k]||0)+l.v;Rm[l.m]=(Rm[l.m]||0)+l.v}
-    const c=contaDe(l.f);if(!c){semConta[l.f]=(semConta[l.f]||0)+1;continue}
+    const c=contaDe(l.f,l.m);if(!c){semConta[l.f]=(semConta[l.f]||0)+1;continue}
     mexe(c,l.m,l.tp==="R"?l.v:-l.v,l.c);
   }
   const aL={},aLk={};
@@ -581,6 +598,23 @@ async function informarSaldo(c,M,valor){
     }
   }
   await B().gravarTabelas(t);invalida();renderPainel();
+}
+
+/* ========= faturas do mês: qual conta paga ========= */
+function quadroFaturas(M){
+  const T=S.tabelas||{};const contas=Object.keys(T.contas||{}).filter(c=>liquida(tipoConta(c)));
+  const tot={};dados().forEach(l=>{if(l.tp==="D"&&l.m===M&&ehCartao(l.f))tot[l.f]=(tot[l.f]||0)+l.v});
+  const fs=Object.keys(tot).sort();if(!fs.length)return "";
+  return `<h3 style="margin-top:1rem">${ic("cartao")} Faturas pagas em ${mesLabel(M)}</h3><p class="sutil">Escolha de qual conta saiu cada fatura neste mês. A troca vale só para ${mesLabel(M)}; os outros meses seguem o vínculo padrão de Ajustes.</p>
+    <table><thead><tr><th>Cartão</th><th class="v">Valor da fatura</th><th>Paga pela conta</th></tr></thead><tbody>
+    ${fs.map(f=>{const esp=((T.debitoMes||{})[f]||{})[M];return `<tr><td>${esc(f)}${esp?` <span class="tag">só neste mês</span>`:""}</td><td class="v">${brl(tot[f])}</td><td><select data-fat="${esc(f)}" style="max-width:16rem">${opts(contas,contaDe(f,M),"— fora dos saldos —")}</select></td></tr>`}).join("")}</tbody></table>`;
+}
+async function trocarPagadora(f,M,conta){
+  const t=JSON.parse(JSON.stringify(S.tabelas));t.debitoMes=t.debitoMes||{};const sv=S.tabelas;
+  S.tabelas={...t,debitoMes:{}};const padrao=contaDe(f);S.tabelas=sv;
+  t.debitoMes[f]=t.debitoMes[f]||{};if(!conta||conta===padrao)delete t.debitoMes[f][M];else t.debitoMes[f][M]=conta;
+  if(!Object.keys(t.debitoMes[f]).length)delete t.debitoMes[f];
+  await B().gravarTabelas(t);invalida();renderPainel();toast("Conta pagadora da fatura atualizada.");
 }
 
 /* ========= períodos ========= */
@@ -647,6 +681,7 @@ function renderPainel(){
       <table class="contas"><thead><tr><th>Conta</th><th class="v">Saldo inicial</th><th class="v">Entradas</th><th class="v">Saídas</th><th class="v">Realizado</th><th class="v">Previsto fim do mês</th><th class="v">Informado</th><th class="v">Conferência</th></tr></thead>
       ${nomes.map(g=>{const arr=grupos[g];return `<tbody><tr class="grupo"><td>${esc(g)}</td><td class="v">${brl(tot(arr,"ini"))}</td><td></td><td></td><td class="v">${brl(tot(arr,"real"))}</td><td class="v">${brl(tot(arr,"prev"))}</td><td></td><td></td></tr>${arr.map(linha).join("")}</tbody>`}).join("")}
       <tfoot><tr><th>Patrimônio líquido</th><th class="v">${brl(RS.patIni)}</th><th></th><th></th><th class="v">${brl(tot(sal,"real"))}</th><th class="v">${brl(RS.patPrev)}</th><th></th><th></th></tr></tfoot></table>
+      ${quadroFaturas(M)}
       ${Object.keys(I.semConta).length?`<div class="aviso">Formas de pagamento sem conta vinculada ficam fora dos saldos: ${Object.keys(I.semConta).map(esc).join(", ")}. Vincule em Ajustes.</div>`:""}
     </div>`;
   }
@@ -695,6 +730,7 @@ function renderPainel(){
   el.querySelectorAll("[data-irmes]").forEach(a=>a.onclick=e=>{e.preventDefault();S.mes=a.dataset.irmes;renderTudo()});
   el.querySelectorAll("[data-abre]").forEach(b=>b.onclick=()=>{const c=b.dataset.abre;ABERTAS.has(c)?ABERTAS.delete(c):ABERTAS.add(c);renderPainel()});
   el.querySelectorAll("[data-fsub]").forEach(a=>a.onclick=e=>{e.preventDefault();filtrarCat(a.dataset.fcat,a.dataset.fsub,M)});
+  el.querySelectorAll("[data-fat]").forEach(s=>s.onchange=async()=>{s.disabled=true;try{await trocarPagadora(s.dataset.fat,M,s.value)}catch(x){toast(x.message);s.disabled=false}});
   el.querySelectorAll("[data-banco]").forEach(i=>i.onchange=async()=>{i.disabled=true;
     try{await informarSaldo(i.dataset.banco,M,i.value===""?"":parseFloat(i.value))}catch(x){toast(x.message);i.disabled=false}});
 }
@@ -1014,7 +1050,7 @@ function renderReclass(){
         if(l.tp==="P"&&mapa.has(`D|${l.cat}|${l.sub}`))return {...l,pt:1};
         if(l.tp!=="D"&&l.tp!=="R")return l;
         const k=`${l.tp}|${l.cat}|${l.tp==="D"?l.sub:""}`;if(!mapa.has(k))return l;
-        const dest=mapa.get(k);const conta=contaDe(l.f)||l.f;const v=Math.abs(l.v);feitos++;
+        const dest=mapa.get(k);const conta=contaDe(l.f,l.m)||l.f;const v=Math.abs(l.v);feitos++;
         const sai=(l.tp==="D")===(l.v>=0); // despesa positiva ou receita negativa: dinheiro sai da conta
         return {...l,tp:"T",v,f:sai?conta:dest,fd:sai?dest:conta,o2:"reclass",u:Date.now()};
       });
@@ -1059,6 +1095,8 @@ function renderAjustes(){
     <p class="sutil">Cada conta parte do saldo inicial no mês indicado. Para dívidas, informe o saldo devedor (valor positivo). Os grupos organizam o card de patrimônio.</p>
     <div class="acoes" style="margin:0 0 .4rem"><label class="btn sec" style="margin:0;color:var(--marca)">Ler contas e saldos da planilha<input type="file" id="ajResumo" accept=".xlsx,.xlsm" class="oculto"></label></div>
     <p class="sutil">Lê só a aba Resumo (contas, aplicações e empréstimos a receber). Os lançamentos não são alterados; contas já cadastradas mantêm tipo e grupo.</p>
+    <div class="acoes" style="margin:.2rem 0 .4rem"><label class="btn sec" style="margin:0;color:var(--marca)">Ler vínculos mês a mês da planilha<input type="file" id="ajVinc" accept=".xlsx,.xlsm" class="oculto"></label></div>
+    <p class="sutil">Traz, para cada mês do histórico, de qual conta saiu o pagamento de cada fatura (como nas fórmulas do Saldo Final da aba Resumo). Não altera saldos iniciais nem lançamentos.${Object.keys(T.debitoMes||{}).length?` Hoje há vínculos específicos em ${Object.values(T.debitoMes).reduce((a,o)=>a+Object.keys(o).length,0)} faturas.`:""}</p>
     <div class="rolagem"><table><thead><tr><th>Conta</th><th>Tipo</th><th>Grupo</th><th>Saldo inicial</th><th>No início de</th><th></th></tr></thead><tbody>
     ${contas.map(([c,v])=>{const tp=tipoConta(c);return `<tr><td><span class="nomecat">${ic(TIPO_IC[tp])}${esc(c)}</span></td>
       <td><select data-ctipo="${esc(c)}">${Object.entries(TIPOS).map(([k,t])=>`<option value="${k}" ${k===tp?"selected":""}>${t}</option>`).join("")}</select></td>
@@ -1097,6 +1135,12 @@ function renderAjustes(){
     const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=nome;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000);
     if(await B().enviarExport(blob,nome))toast("Excel gerado e salvo no OneDrive.");else toast("Excel gerado.")}catch(x){toast(x.message)}e.target.disabled=false};
   if($("#ajConsol"))$("#ajConsol").onclick=async e=>{e.target.disabled=true;try{const n=await B().consolidar();invalida();renderTudo();toast(`${n} pendentes consolidados.`)}catch(x){toast(x.message,6000);e.target.disabled=false}};
+  $("#ajVinc").onchange=async e=>{const a=e.target.files[0];if(!a)return;
+    try{const wb=XLSX.read(await a.arrayBuffer(),{type:"array"});const pm=lerVinculosMensais(wb);if(!pm)return toast("Não encontrei a seção Saldo Final na aba Resumo.");
+      const t=clone();const contas=Object.keys(t.contas||{});const dm={};let n=0;
+      const padrao=f=>{const sv=S.tabelas;S.tabelas={...t,debitoMes:{}};const c=contaDe(f);S.tabelas=sv;return c};
+      for(const[m,mapa]of Object.entries(pm))for(const[f,c]of Object.entries(mapa)){if(!contas.includes(c)||c===f)continue;if(padrao(f)!==c){(dm[f]=dm[f]||{})[m]=c;n++}}
+      t.debitoMes=dm;await salvarT(t,`${n} faturas com conta pagadora diferente do padrão foram registradas.`)}catch(x){toast(x.message)}};
   $("#ajResumo").onchange=async e=>{const a=e.target.files[0];if(!a)return;
     try{const wb=XLSX.read(await a.arrayBuffer(),{type:"array"});const rs=lerContasResumo(wb);if(!rs)return toast("Não encontrei a seção Saldo Final na aba Resumo.");
       const t=clone();const antigas=t.contas||{};t.contas={};
