@@ -817,9 +817,9 @@ function camposForm(l,prefixo){
   const T=S.tabelas||{catD:{},catR:[],formas:[]};const contas=Object.keys(T.contas||{});
   const tipoSel=`<div><label>Tipo</label><select data-k="tp"><option value="D" ${l.tp==="D"?"selected":""}>Despesa</option><option value="R" ${l.tp==="R"?"selected":""}>Receita</option><option value="T" ${l.tp==="T"?"selected":""}>Transferência entre contas</option><option value="P" ${l.tp==="P"?"selected":""}>Previsão (orçado)</option></select></div>`;
   if(l.tp==="T")return `<div class="form">${tipoSel}
-    <div><label>Data</label><input type="date" data-k="dc" value="${esc(l.dc)}"></div>
+    <div><label>Data do pagamento</label><input type="date" data-k="dp" value="${esc(l.dp||l.dc)}"></div>
     <div><label>Valor (R$)</label><input type="number" step="0.01" inputmode="decimal" data-k="v" value="${l.v??""}"></div>
-    <div><label>Sai da conta</label><select data-k="f">${opts(contas,l.f,"Escolha")}</select></div>
+    <div><label>Sai da conta ou cartão</label><select data-k="f">${opts([...contas,...(T.formas||[]).filter(ehCartao)],l.f,"Escolha")}</select></div>
     <div><label>Entra na conta</label><select data-k="fd">${opts(contas,l.fd,"Escolha")}</select></div>
     <div><label>Status</label><select data-k="c">${STATUS.map((s,i)=>`<option value="${i}" ${l.c===i?"selected":""}>${s}</option>`).join("")}</select></div>
     <div class="largo"><label>Descrição (opcional)</label><input data-k="ds" value="${esc(l.ds)}" placeholder="Ex.: aporte mensal, parcela do empréstimo, devolução"></div>
@@ -841,19 +841,19 @@ function camposForm(l,prefixo){
 }
 function lerForm(raiz,l){
   raiz.querySelectorAll("[data-k]").forEach(i=>{const k=i.dataset.k;let v=i.value;if(k==="v")v=Math.round(parseFloat(String(v).replace(",","."))*100)/100;if(k==="c")v=+v;l[k]=v});
-  if(l.tp==="T"){l.m=(l.dc||hojeISO()).slice(0,7);l.dp=l.dc;l.cat=l.cat||"Transferências";l.sub=l.sub||"";l.l=l.l||""}
+  if(l.tp==="T"){l.dp=l.dp||l.dc||hojeISO();l.m=l.dp.slice(0,7);l.dc=l.dc||l.dp;l.cat=l.cat||"Transferências";l.sub=l.sub||"";l.l=l.l||""}
   return l;
 }
 function ligarForm(raiz,l,rerender){
   const q=k=>raiz.querySelector(`[data-k="${k}"]`);
-  q("tp").onchange=()=>{lerForm(raiz,l);if(l.tp==="T"){l.f="";l.fd="";l.cat="Transferências";l.sub=""}else{l.cat="";l.sub="";if(!l.m){Object.assign(l,calcularPagto(l.f,l.dc))}}rerender()};
+  q("tp").onchange=()=>{lerForm(raiz,l);if(l.tp==="T"){l.f="";l.fd="";l.cat="Transferências";l.sub="";l.dp=l.dc||hojeISO()}else{l.cat="";l.sub="";if(!l.m){Object.assign(l,calcularPagto(l.f,l.dc))}}rerender()};
   if(l.tp==="T")return;
   q("cat").onchange=()=>{lerForm(raiz,l);l.sub="";rerender()};
   const recalc=()=>{lerForm(raiz,l);const p=calcularPagto(l.f,l.dc);q("m").value=p.m;q("dp").value=p.dp;if(raiz.dataset.novo)q("c").value=String(confPadrao(l.f))};
   q("f").onchange=recalc;q("dc").onchange=recalc;
 }
 function validar(l){
-  if(!l.dc)return "Informe a data.";if(!isFinite(l.v)||l.v===0)return "Informe um valor diferente de zero.";
+  if(!(l.tp==="T"?l.dp:l.dc))return "Informe a data.";if(!isFinite(l.v)||l.v===0)return "Informe um valor diferente de zero.";
   if(l.tp==="T"){if(!l.f||!l.fd)return "Escolha a conta de saída e a de entrada.";if(l.f===l.fd)return "As contas de saída e entrada precisam ser diferentes.";if(l.v<0)return "Informe o valor da transferência positivo.";return null}
   if(!l.f)return "Escolha a forma de pagamento.";if(!l.cat)return "Escolha a categoria.";if(!l.m)return "Informe o mês de pagamento.";return null;
 }
@@ -888,7 +888,7 @@ function lerColagem(){
   let arr;try{arr=JSON.parse(txt.slice(ini,fim+1))}catch{return toast("Não consegui ler o texto. Confira se colou a resposta completa da IA.")}
   if(!Array.isArray(arr))arr=[arr];const T=S.tabelas||{catD:{},catR:[],formas:[]};const contas=Object.keys(T.contas||{});
   REV=arr.map(x=>{const dc=serialISO(x.data_compra)||hojeISO();const v=Math.round(Math.abs(+String(x.valor).replace(",","."))*100)/100;
-    if(/transf/i.test(x.tipo||""))return {tp:"T",dc,v,f:casar(x.forma_pagamento||x.conta_origem,contas),fd:casar(x.conta_destino,contas),l:limpa(x.estabelecimento),ds:limpa(x.descricao),c:2,cat:"Transferências",sub:"",o:"ia",n:1};
+    if(/transf/i.test(x.tipo||""))return {tp:"T",dc,dp:dc,v,f:casar(x.forma_pagamento||x.conta_origem,[...contas,...T.formas.filter(ehCartao)]),fd:casar(x.conta_destino,contas),l:limpa(x.estabelecimento),ds:limpa(x.descricao),c:2,cat:"Transferências",sub:"",o:"ia",n:1};
     const tp=/receita/i.test(x.tipo||"")?"R":"D";const cats=tp==="R"?T.catR:Object.keys(T.catD);const cat=casar(x.categoria,cats);const f=casar(x.forma_pagamento,T.formas);
     return {tp,dc,f,v,n:+x.parcelas||1,l:limpa(x.estabelecimento),cat,sub:tp==="R"?"":casar(x.subtipo,T.catD[cat]||[]),ds:limpa(x.descricao),c:confPadrao(f),o:"ia"}});
   renderRevisao();
@@ -899,7 +899,7 @@ function renderRevisao(){
   ${REV.map((r,i)=>`<div class="painel" data-rev="${i}" style="margin-top:.6rem;padding:.8rem">
     ${r.tp==="T"?`<div class="form"><div class="largo"><span class="tag">${ic("transf")} Transferência</span></div>
       <div><label>Data</label><input type="date" data-k="dc" value="${esc(r.dc)}"></div><div><label>Valor</label><input type="number" step="0.01" data-k="v" value="${r.v}"></div>
-      <div><label>Sai da conta</label><select data-k="f">${opts(contas,r.f,"Escolha")}</select></div><div><label>Entra na conta</label><select data-k="fd">${opts(contas,r.fd,"Escolha")}</select></div></div>`:
+      <div><label>Sai da conta ou cartão</label><select data-k="f">${opts([...contas,...T.formas.filter(ehCartao)],r.f,"Escolha")}</select></div><div><label>Entra na conta</label><select data-k="fd">${opts(contas,r.fd,"Escolha")}</select></div></div>`:
     `<div class="form">
       <div class="largo"><label>Local</label><input data-k="l" value="${esc(r.l)}"></div>
       <div><label>Data da compra</label><input type="date" data-k="dc" value="${esc(r.dc)}"></div>
@@ -1050,7 +1050,7 @@ function renderReclass(){
         if(l.tp==="P"&&mapa.has(`D|${l.cat}|${l.sub}`))return {...l,pt:1};
         if(l.tp!=="D"&&l.tp!=="R")return l;
         const k=`${l.tp}|${l.cat}|${l.tp==="D"?l.sub:""}`;if(!mapa.has(k))return l;
-        const dest=mapa.get(k);const conta=contaDe(l.f,l.m)||l.f;const v=Math.abs(l.v);feitos++;
+        const dest=mapa.get(k);const conta=ehCartao(l.f)?l.f:(contaDe(l.f,l.m)||l.f);const v=Math.abs(l.v);feitos++;
         const sai=(l.tp==="D")===(l.v>=0); // despesa positiva ou receita negativa: dinheiro sai da conta
         return {...l,tp:"T",v,f:sai?conta:dest,fd:sai?dest:conta,o2:"reclass",u:Date.now()};
       });
